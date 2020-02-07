@@ -1,14 +1,20 @@
 package io.pivotal.rsocketclient;
 
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+
 import io.pivotal.rsocketclient.data.Message;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.rsocket.RSocketRequester;
 import org.springframework.shell.standard.ShellComponent;
 import org.springframework.shell.standard.ShellMethod;
-import org.springframework.shell.standard.ShellOption;
-import reactor.core.publisher.Flux;
 
 @Slf4j
 @ShellComponent
@@ -20,6 +26,11 @@ public class RSocketClient {
     private static final String FAF = "Fire-And-Forget";
     private static final String STREAM = "Stream";
     private static final String CHANNEL = "Channel";
+
+    private final Map<Integer, Disposable> streams = new HashMap<>();
+
+    private final AtomicInteger index = new AtomicInteger();
+
 
     @Autowired
     public RSocketClient(RSocketRequester.Builder rsocketRequesterBuilder) {
@@ -49,22 +60,41 @@ public class RSocketClient {
     }
 
     @ShellMethod("Send one request. Many responses (stream) will be printed.")
-    public void stream() {
+    public String stream() {
         log.info("\nRequest-Stream. Sending one request. Waiting for unlimited responses (Stop process to quit)...");
-        this.rsocketRequester
+        return start(prefix -> this.rsocketRequester
                 .route("stream")
                 .data(new Message(ORIGIN, STREAM))
                 .retrieveFlux(Message.class)
-                .subscribe(er -> log.info("Response received: {}", er));
+                .doOnNext(message -> log.info("{}: {}", prefix, message))
+                .doOnCancel(() -> log.info("{} cancelled", prefix))
+                .subscribe());
     }
 
     @ShellMethod("Stream ten requests. Ten responses (stream) will be printed.")
-    public void channel(){
+    public String channel(){
         log.info("\nChannel. Sending ten requests. Waiting for ten responses...");
-        this.rsocketRequester
+        return start(prefix -> this.rsocketRequester
                 .route("channel")
                 .data(Flux.range(0,10).map(integer -> new Message(ORIGIN, CHANNEL, integer)), Message.class)
                 .retrieveFlux(Message.class)
-                .subscribe(er -> log.info("Response received: {}", er));
+                .doOnNext(message -> log.info("{}: {}", prefix, message))
+                .doOnCancel(() -> log.info("{}: cancelled", prefix))
+                .subscribe());
     }
+
+    @ShellMethod("Stop a previously started stream")
+    public void stop(int streamId) {
+        Disposable disposable = this.streams.remove(streamId);
+        if (disposable != null) {
+            disposable.dispose();
+        }
+    }
+
+    private String start(Function<String, Disposable> factory) {
+        int streamId = this.index.incrementAndGet();
+        this.streams.put(streamId, factory.apply("\"[" + streamId + "]"));
+        return "\nType \"Stop " + streamId + "\" to cancel\n";
+    }
+
 }
